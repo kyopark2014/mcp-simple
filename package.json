@@ -1,0 +1,8 @@
+{
+  "name": "power-agent",
+  "private": true,
+  "description": "MCP web_fetch 서버(npx mcp-server-fetch-typescript)용 의존성",
+  "dependencies": {
+    "mcp-server-fetch-typescript": "^0.1.1"
+  }
+}
