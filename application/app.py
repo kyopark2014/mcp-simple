@@ -6,6 +6,7 @@ import logging
 import sys
 import os
 import asyncio
+from notification_queue import NotificationQueue
 
 logging.basicConfig(
     level=logging.INFO,  # Default to INFO level
@@ -289,7 +290,7 @@ if prompt := st.chat_input("메시지를 입력하세요."):
                 containers = {
                     "tools": st.empty(),
                     "status": st.empty(),
-                    "notification": [st.empty() for _ in range(500)]
+                    "queue": NotificationQueue(container=status),
                 }
 
                 response, image_url = asyncio.run(chat.run_langgraph_agent(
