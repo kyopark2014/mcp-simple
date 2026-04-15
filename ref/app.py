@@ -1,4 +1,6 @@
 import streamlit as st 
+import streamlit_paste_button as spb
+import utils
 import chat
 import json
 import mcp_config 
@@ -6,6 +8,9 @@ import logging
 import sys
 import os
 import asyncio
+import io
+import langgraph_agent
+import skill
 from notification_queue import NotificationQueue
 
 logging.basicConfig(
@@ -17,10 +22,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("streamlit")
 
-os.environ["DEV"] = "true"  # Skip user confirmation of get_user_input
+config = utils.load_config()
+sharing_url = config.get("sharing_url")
 
 # title
-st.set_page_config(page_title='Agent', page_icon=None, layout="centered", initial_sidebar_state="auto", menu_items=None)
+st.set_page_config(page_title='agent-skills', page_icon=None, layout="centered", initial_sidebar_state="auto", menu_items=None)
 
 mode_descriptions = {
     "일상적인 대화": [
@@ -30,25 +36,27 @@ mode_descriptions = {
         "Bedrock Knowledge Base를 이용해 구현한 RAG로 필요한 정보를 검색합니다."
     ],
     "Agent": [
-        "MCP와 LangGraph를 활용한 Agent를 이용합니다. 왼쪽 메뉴에서 필요한 MCP를 선택하세요."
+        "SKILL과 MCP를 활용한 Agent를 이용합니다. 왼쪽 메뉴에서 필요한 MCP를 선택하세요."
     ],
     "Agent (Chat)": [
-        "MCP를 활용한 Agent를 이용합니다. 채팅 히스토리를 이용해 interative한 대화를 즐길 수 있습니다."
+        "SKILL과 MCP를 활용한 Agent를 이용합니다. 채팅 히스토리를 이용해 interative한 대화를 즐길 수 있습니다."
+    ],
+    "QA Agent": [
+        "RAG를 이용해 얻은 정보로 Test Case를 생성합니다."
     ],
     "이미지 분석": [
         "이미지를 선택하여 멀티모달을 이용하여 분석합니다."
     ]
 }
 
-agentType = 'langgraph'
 with st.sidebar:
     st.title("🔮 Menu")
     
     st.markdown(
         "Amazon Bedrock을 이용해 다양한 형태의 대화를 구현합니다." 
-        "여기에서는 MCP를 이용해 RAG를 비롯한 데이터 분석용 기능을 구현합니다." 
-        "주요 코드는 LangChain과 LangGraph를 이용해 구현되었습니다.\n"
-        "상세한 코드는 [Github](https://github.com/kyopark2014/power-trade)을 참조하세요."
+        "여기에서는 SKILL과 MCP를 이용해 agent의 기능을 확장합니다." 
+        "주요 코드는 LangGraph를 이용해 구현되었습니다.\n"
+        "상세한 코드는 [Github](https://github.com/kyopark2014/agent-skills)을 참조하세요."
     )
 
     st.subheader("🐱 대화 형태")
@@ -60,28 +68,61 @@ with st.sidebar:
     st.info(mode_descriptions[mode][0])
     
     # mcp selection    
+    mcp_options = [
+        "use-aws", 
+        "tavily", 
+        "knowledge base", 
+        "aws_documentation", 
+        "trade_info", 
+        "code interpreter", 
+        "web_fetch",
+        "drawio",
+        "text_extraction",
+        "slack",
+        "notion",
+        "outlook",
+        "gog",
+        "korea_weather",
+        "obsidian",
+        "image_generation",
+        "browser-use",
+        "AWS Sentral (Employee)",
+        "AWS Outlook (Employee)",
+        "사용자 설정"
+    ]    
     if mode=='Agent' or mode=='Agent (Chat)':
+        # Skill Config JSON input
+        st.subheader("⚙️ Skill Config")
+
+        skill_selections = {}
+        default_skill_selections = config.get("default_skills") or ["skill-creator", "graphify"]
+        logger.info(f"default_skill_selections: {default_skill_selections}")
+        with st.expander("Skill 옵션 선택", expanded=True):
+            available_skill_info = skill.available_skill_info("base")
+            for s in available_skill_info:
+                default_value = s["name"] in default_skill_selections
+                skill_selections[s["name"]] = st.checkbox(s["name"], key=f"skill_{s['name']}", value=default_value, help=s["description"], disabled=False)
+    
+        selected_skills = [name for name, is_selected in skill_selections.items() if is_selected]
+        logger.info(f"selected_skills: {selected_skills}")
+
+        if selected_skills != config.get("default_skills"):
+            config["default_skills"] = selected_skills
+            with open(utils.config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, ensure_ascii=False, indent=4)
+
         # MCP Config JSON input
         st.subheader("⚙️ MCP Config")
 
-        # Change radio to checkbox
-        mcp_options = [
-            "tavily", 
-            "knowledge base", 
-            "aws documentation", 
-            "trade info", 
-            "weather", 
-            "web_fetch",
-            "사용자 설정"
-        ]
+        # Change radio to checkbox        
         mcp_selections = {}
-        default_selections = ["tavily", "knowledge base", "aws documentation"]
+        default_selections = ["web_fetch", "slack", "notion"]
         
         with st.expander("MCP 옵션 선택", expanded=True):
             for option in mcp_options:
                 default_value = option in default_selections
                 mcp_selections[option] = st.checkbox(option, key=f"mcp_{option}", value=default_value)
-            
+                
         if mcp_selections["사용자 설정"]:
             mcp = {}
             try:
@@ -119,6 +160,7 @@ with st.sidebar:
             logger.info("save to user_defined_mcp.json")
         
         mcp_servers = [server for server, is_selected in mcp_selections.items() if is_selected]
+
     else:
         mcp_servers = []
 
@@ -130,21 +172,71 @@ with st.sidebar:
             "Claude 4.6 Opus",
             "Claude 4.5 Haiku",
             "Claude 4.5 Sonnet",
-            "Claude 4.5 Opus"
+            "Claude 4.5 Opus",  
+            "Claude 4 Opus", 
+            "Claude 4 Sonnet", 
+            "Claude 3.7 Sonnet", 
+            "Claude 3.5 Sonnet", 
+            "Claude 3.0 Sonnet", 
+            "Claude 3.5 Haiku", 
+            "OpenAI OSS 120B",
+            "OpenAI OSS 20B",
+            "Nova 2 Lite",
+            "Nova Premier", 
+            "Nova Pro", 
+            "Nova Lite", 
+            "Nova Micro",       
         ), index=0
     )
+
+    # skill checkbox
+    select_skillMode = st.checkbox('Skill Mode', value=True)
+    skillMode = 'Enable' if select_skillMode else 'Disable'    
 
     # debug checkbox
     select_debugMode = st.checkbox('Debug Mode', value=True)
     debugMode = 'Enable' if select_debugMode else 'Disable'
     #print('debugMode: ', debugMode)
 
+    # extended thinking of claude 3.7 sonnet
+    reasoningMode = "Disable"
+    if mode == "일상적인 대화" or mode == "RAG":
+        select_reasoning = st.checkbox('Reasoning', value=False)
+        reasoningMode = 'Enable' if select_reasoning else 'Disable'
+        # logger.info(f"reasoningMode: {reasoningMode}")
+
     uploaded_file = None
+    pasted_image = None
+
+    def safe_paste_button(label, key):
+        """streamlit-paste-button 래퍼: 내부 이미지 디코딩 실패 시 안전하게 처리"""
+        try:
+            result = spb.paste_image_button(label, key=key, errors="ignore")
+            if result.image_data is not None:
+                return result.image_data
+        except Exception as e:
+            logger.warning(f"clipboard paste error: {e}")
+        return None
+
     if mode=='이미지 분석':
         st.subheader("🌇 이미지 업로드")
         uploaded_file = st.file_uploader("이미지 분석을 위한 파일을 선택합니다.", type=["png", "jpg", "jpeg"])
+        
+        st.markdown("**또는** 화면 캡처를 붙여넣으세요:")
+        pasted_image = safe_paste_button("📋 클립보드에서 붙여넣기", key="paste_image")
+        if pasted_image:
+            st.image(pasted_image, caption="붙여넣은 이미지", use_container_width=True)
 
-    chat.update(modelName, debugMode)    
+    elif mode=='RAG' or mode=="Agent" or mode=="Agent (Chat)":
+        st.subheader("📋 문서/이미지 업로드")
+        uploaded_file = st.file_uploader("RAG를 위한 파일을 선택합니다.", type=["pdf", "txt", "py", "md", "csv", "json", "png", "jpg", "jpeg"], key=chat.fileId)
+        
+        st.markdown("**또는** 화면 캡처를 붙여넣으세요:")
+        pasted_image = safe_paste_button("📋 클립보드에서 붙여넣기", key="paste_agent")
+        if pasted_image:
+            st.image(pasted_image, caption="붙여넣은 이미지", use_container_width=True)
+
+    chat.update(modelName, debugMode, reasoningMode, skillMode)    
 
     st.success(f"Connected to {modelName}", icon="💚")
     clear_button = st.button("대화 초기화", key="clear")
@@ -162,6 +254,26 @@ if clear_button==True:
 file_name = ""
 file_bytes = None
 state_of_code_interpreter = False
+
+# Handle pasted image from clipboard
+if pasted_image is not None and clear_button==False:
+    buf = io.BytesIO()
+    pasted_image.save(buf, format="PNG")
+    file_bytes = buf.getvalue()
+    file_name = "pasted_screenshot.png"
+    logger.info(f"pasted image: {file_name}, size={len(file_bytes)} bytes")
+
+    if mode == '이미지 분석':
+        st.image(pasted_image, caption="붙여넣은 이미지 미리보기", use_container_width=True)
+    elif mode in ('Agent', 'Agent (Chat)', 'RAG'):
+        chat.initiate()
+        if debugMode=='Enable':
+            st.info('붙여넣은 이미지를 업로드합니다.')
+        file_url = chat.upload_to_s3(file_bytes, file_name)
+        logger.info(f"pasted image uploaded: {file_url}")
+        import utils
+        utils.sync_data_source()
+
 if uploaded_file is not None and clear_button==False:
     logger.info(f"uploaded_file.name: {uploaded_file.name}")
     if uploaded_file.name:
@@ -246,7 +358,6 @@ if clear_button or "messages" not in st.session_state:
     chat.clear_chat_history()
     st.rerun()    
 
-    
 # Always show the chat input
 if prompt := st.chat_input("메시지를 입력하세요."):
     with st.chat_message("user"):  # display user message in chat message container
@@ -291,7 +402,7 @@ if prompt := st.chat_input("메시지를 입력하세요."):
                     "queue": NotificationQueue(container=status),
                 }
 
-                response, image_url = asyncio.run(chat.run_langgraph_agent(
+                response, artifacts = asyncio.run(langgraph_agent.run_langgraph_agent(
                     query=prompt, 
                     mcp_servers=mcp_servers, 
                     history_mode=history_mode, 
@@ -300,17 +411,17 @@ if prompt := st.chat_input("메시지를 입력하세요."):
             st.session_state.messages.append({
                 "role": "assistant", 
                 "content": response,
-                "images": image_url if image_url else []
+                "artifacts": artifacts if artifacts else []
             })
 
-            for url in image_url:
+            for url in artifacts:
                 logger.info(f"url: {url}")
                 file_name = url[url.rfind('/')+1:]
                 st.image(url, caption=file_name, use_container_width=True)
-        
+                
         elif mode == "이미지 분석":
-            if uploaded_file is None or uploaded_file == "":
-                st.error("파일을 먼저 업로드하세요.")
+            if file_bytes is None:
+                st.error("이미지를 먼저 업로드하거나 클립보드에서 붙여넣으세요.")
                 st.stop()
 
             else:

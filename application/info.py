@@ -22,25 +22,11 @@ claude_4_5_sonnet_models = {
     "model_type": "claude",
     "model_id": "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
 }
-
-claude_4_opus_models = {
-    "model_type": "claude",
-    "model_id": "global.anthropic.claude-opus-4-20250514-v1:0"
-}
-
-claude_4_sonnet_models = {
-    "model_type": "claude",
-    "model_id": "global.anthropic.claude-sonnet-4-20250514-v1:0"
-}
     
 def get_model_info(model_name):
     models = []
 
-    if model_name == "Claude 4 Opus":
-        models = claude_4_opus_models
-    elif model_name == "Claude 4 Sonnet":
-        models = claude_4_sonnet_models
-    elif model_name == "Claude 4.5 Opus":
+    if model_name == "Claude 4.5 Opus":
         models = claude_4_5_opus_models
     elif model_name == "Claude 4.5 Sonnet":
         models = claude_4_5_sonnet_models
