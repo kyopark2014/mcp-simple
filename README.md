@@ -1,4 +1,4 @@
-# Simple Agent
+# MCP Agent
 
 여기서는 MCP를 포함하여 Agent의 개발 및 기능 테스트를 위한 개발 환경을 구성합니다.
 
