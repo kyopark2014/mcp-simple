@@ -285,17 +285,16 @@ if prompt := st.chat_input("메시지를 입력하세요."):
                 history_mode = "Enable"
 
             with st.status("thinking...", expanded=True, state="running") as status:
-                containers = {
-                    "tools": st.empty(),
-                    "status": st.empty(),
-                    "queue": NotificationQueue(container=status),
-                }
+                notification_queue = NotificationQueue(container=status)
 
                 response, image_url = asyncio.run(chat.run_langgraph_agent(
                     query=prompt, 
                     mcp_servers=mcp_servers, 
                     history_mode=history_mode, 
-                    containers=containers))
+                    notification_queue=notification_queue))
+
+                if debugMode == "Disable":
+                    st.markdown(response)
 
             st.session_state.messages.append({
                 "role": "assistant", 

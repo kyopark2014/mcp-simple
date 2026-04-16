@@ -33,11 +33,11 @@ def load_config(mcp_type):
     if mcp_type == "knowledge base":
         mcp_type = "kb-retriever"
     elif mcp_type == "aws documentation":
-        mcp_type = "aws_documentation"    
+        mcp_type = "aws-documentation"    
     elif mcp_type == "trade info":
-        mcp_type = "trade_info"
+        mcp_type = "trade-info"
     elif mcp_type == "weather":
-        mcp_type = "korea_weather"
+        mcp_type = "korea-weather"
     
     if mcp_type == "tavily":
         return {
@@ -51,7 +51,7 @@ def load_config(mcp_type):
             }
         }
     
-    elif mcp_type == "korea_weather":
+    elif mcp_type == "korea-weather":
         return {
             "mcpServers": {
                 "korea-weather": {
@@ -61,7 +61,7 @@ def load_config(mcp_type):
             }
         }
         
-    elif mcp_type == "kb_retriever":
+    elif mcp_type == "kb-retriever":
         return {
             "mcpServers": {
                 "kb-retriever": {
@@ -71,7 +71,7 @@ def load_config(mcp_type):
             }
         }
     
-    elif mcp_type == "aws_documentation":
+    elif mcp_type == "aws-documentation":
         return {
             "mcpServers": {
                 "awslabs.aws-documentation-mcp-server": {
@@ -84,7 +84,7 @@ def load_config(mcp_type):
             }
         }
 
-    elif mcp_type == "trade_info":
+    elif mcp_type == "trade-info":
         return {
             "mcpServers": {
                 "trade-info": {
