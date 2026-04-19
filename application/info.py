@@ -1,3 +1,8 @@
+claude_4_7_opus_models = {
+    "model_type": "claude",
+    "model_id": "global.anthropic.claude-opus-4-7"
+}
+
 claude_4_6_opus_models = {
     "model_type": "claude",
     "model_id": "global.anthropic.claude-opus-4-6-v1"
@@ -36,5 +41,9 @@ def get_model_info(model_name):
         models = claude_4_6_sonnet_models
     elif model_name == "Claude 4.6 Opus":
         models = claude_4_6_opus_models
+    elif model_name == "Claude 4.7 Opus":
+        models = claude_4_7_opus_models
+    else:
+        models = claude_4_6_sonnet_models
 
     return models
