@@ -1,4 +1,6 @@
+import hashlib
 import logging
+import re
 import sys
 import traceback
 import chat
@@ -13,7 +15,7 @@ from langgraph.graph import START, END, StateGraph
 from typing_extensions import Annotated, TypedDict
 from langgraph.graph.message import add_messages
 from langchain_core.prompts import MessagesPlaceholder, ChatPromptTemplate
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
 from langchain_core.messages.base import BaseMessage, BaseMessageChunk
 from langchain_core.messages.ai import AIMessage, AIMessageChunk
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -449,12 +451,80 @@ BASE_SYSTEM_PROMPT = (
     "한국어로 답변하세요."
 )
 
+# Bedrock Anthropic/Nova prompt caching (ephemeral, 5m TTL).
+PROMPT_CACHE_CONTROL = {"type": "ephemeral", "ttl": "5m"}
+GPT_PROMPT_CACHE_OPTIONS = {"mode": "explicit", "ttl": "30m"}
+
+
+def _supports_bedrock_prompt_caching(model_type: str | None) -> bool:
+    return model_type in ("claude", "nova")
+
+
+def _supports_gpt_explicit_caching(model_type: str | None, model_id: str | None) -> bool:
+    if model_type != "openai":
+        return False
+    mid = (model_id or "").lower()
+    match = re.search(r"openai\.gpt-(\d+)\.(\d+)", mid)
+    if not match:
+        return False
+    major, minor = int(match.group(1)), int(match.group(2))
+    return (major, minor) >= (5, 6)
+
+
+def _gpt_prompt_cache_key(config: dict, tools: list | None) -> str:
+    cfg = config.get("configurable") or {}
+    thread_id = cfg.get("thread_id") or "default"
+    tool_names = sorted(getattr(t, "name", str(t)) for t in (tools or []))
+    tools_digest = hashlib.sha256(",".join(tool_names).encode()).hexdigest()[:12]
+    project = config.get("projectName") or utils.load_config().get("projectName") or "default"
+    return f"{project}:{thread_id}:{tools_digest}"
+
+
+def _system_message_with_bedrock_cache(system: str) -> SystemMessage:
+    return SystemMessage(
+        content=[
+            {
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+    )
+
+
+def _system_message_with_gpt_cache(system: str) -> SystemMessage:
+    return SystemMessage(
+        content=[
+            {
+                "type": "text",
+                "text": system,
+                "prompt_cache_breakpoint": {"mode": "explicit"},
+            }
+        ]
+    )
+
+
+def _log_prompt_cache_usage(response: AIMessage) -> None:
+    usage = getattr(response, "usage_metadata", None) or {}
+    details = usage.get("input_token_details") if isinstance(usage, dict) else None
+    if not isinstance(details, dict):
+        return
+    cache_read = details.get("cache_read") or details.get("cached_tokens") or 0
+    cache_creation = details.get("cache_creation") or details.get("cache_write_tokens") or 0
+    if cache_read or cache_creation:
+        logger.info(
+            "prompt cache usage: cache_read=%s cache_creation=%s",
+            cache_read,
+            cache_creation,
+        )
+
+
 async def call_model(state: State, config):
     logger.info(f"###### call_model ######")
 
     last_message = state['messages'][-1]
     logger.info(f"last message: {last_message}")
-    
+
     image_url = state['image_url'] if 'image_url' in state else []
 
     tools = get_builtin_tools()
@@ -477,9 +547,20 @@ async def call_model(state: State, config):
 
     system = system_prompt if system_prompt else BASE_SYSTEM_PROMPT
 
-    chatModel = chat.get_chat()    
-    
+    active_model_id = chat.model_id
+    active_model_type = chat.model_type
+    chatModel = chat.get_chat()
+
     model = chatModel.bind_tools(tools)
+    use_bedrock_cache = _supports_bedrock_prompt_caching(active_model_type)
+    use_gpt_cache = _supports_gpt_explicit_caching(active_model_type, active_model_id)
+    if use_bedrock_cache:
+        model = model.bind(cache_control=PROMPT_CACHE_CONTROL)
+    elif use_gpt_cache:
+        model = model.bind(
+            prompt_cache_key=_gpt_prompt_cache_key(config, tools),
+            prompt_cache_options=GPT_PROMPT_CACHE_OPTIONS,
+        )
 
     try:
         messages = []
@@ -500,7 +581,7 @@ async def call_model(state: State, config):
                     content = '\n'.join(text_parts) if text_parts else str(content)
                 elif not isinstance(content, str):
                     content = str(content)
-                
+
                 tool_msg = ToolMessage(
                     content=content,
                     tool_call_id=msg.tool_call_id
@@ -508,17 +589,17 @@ async def call_model(state: State, config):
                 messages.append(tool_msg)
             else:
                 messages.append(msg)
-        
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", system),
-                MessagesPlaceholder(variable_name="messages"),
-            ]
-        )
-        chain = prompt | model
-            
+
+        if use_bedrock_cache:
+            system_msg = _system_message_with_bedrock_cache(system)
+        elif use_gpt_cache:
+            system_msg = _system_message_with_gpt_cache(system)
+        else:
+            system_msg = SystemMessage(content=system)
+        model_messages = [system_msg, *messages]
+
         accumulated: AIMessageChunk | None = None
-        async for chunk in chain.astream({"messages": messages}):
+        async for chunk in model.astream(model_messages):
             if accumulated is None:
                 accumulated = chunk
             else:
@@ -532,6 +613,7 @@ async def call_model(state: State, config):
                 content=getattr(merged, "content", str(merged))
             )
         logger.info(f"response of call_model: {response}")
+        _log_prompt_cache_usage(response)
 
     except Exception:
         response = AIMessage(content="답변을 찾지 못하였습니다.")
