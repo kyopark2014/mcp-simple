@@ -18,7 +18,7 @@ from langchain_core.prompts import MessagesPlaceholder, ChatPromptTemplate
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
 from langchain_core.messages.base import BaseMessage, BaseMessageChunk
 from langchain_core.messages.ai import AIMessage, AIMessageChunk
-from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain.mcp import MCPAdapter
 from notification_queue import NotificationQueue
 from pytz import timezone
 from langgraph.prebuilt import ToolNode
@@ -689,14 +689,15 @@ def buildChatAgentWithHistory(tools):
     )
 
 def load_multiple_mcp_server_parameters(mcp_json: dict):
+    """Build per-server configs compatible with langchain.mcp.MCPAdapter / MCPConfig."""
     mcpServers = mcp_json.get("mcpServers")
   
     server_info = {}
     if mcpServers is not None:
         for server_name, cfg in mcpServers.items():
-            if cfg.get("type") == "streamable_http":
+            if cfg.get("type") in ("streamable_http", "http", "streamable-http"):
                 server_info[server_name] = {                    
-                    "transport": "streamable_http",
+                    "transport": "http",
                     "url": cfg.get("url"),
                     "headers": cfg.get("headers", {})
                 }
@@ -723,10 +724,16 @@ async def create_agent(mcp_servers: list, skill_list: list, history_mode: str = 
     server_params = load_multiple_mcp_server_parameters(mcp_json)
 
     try:
-        client = MultiServerMCPClient(server_params)
-        logger.info("MCP client is initialized successfully")
+        mcp_tools = []
+        for server_name, params in server_params.items():
+            try:
+                async with MCPAdapter({"mcpServers": {server_name: params}}) as adapter:
+                    logger.info("MCP client is initialized successfully")
+                    _tools = await adapter.list_tools()
+                mcp_tools.extend(_tools)
+            except Exception as _mcp_err:
+                logger.error(f"Failed to load MCP server '{server_name}': {_mcp_err}")
 
-        mcp_tools = await client.get_tools()
         for t in mcp_tools:
             logger.info(f"mcp_tool: {t.name}")
             if t.name not in {x.name for x in tools}:
